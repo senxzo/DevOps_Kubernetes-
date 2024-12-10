@@ -1,0 +1,74 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-viewer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-viewer-role
+rules:
+- apiGroups: [ "" ]
+  resources: [ "pods" ]
+  verbs: [ "get", "watch", "list" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-viewer-rolebinding
+subjects:
+- kind: ServiceAccount
+  name: pod-viewer
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: pod-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: job1
+spec:
+  schedule: "*/1 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: pod-viewer
+          containers:
+          - name: pending-pod-checker
+            image: google/cloud-sdk:latest # Use a smaller image if needed
+            command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              echo "Job started at $(date)" >> /tmp/logs/pending_pods.log
+
+              # Check for pending pods and output to file
+              LOG_FILE="/tmp/logs/pending_pods_$(date +%F_%H-%M-%S).txt"
+              pending_pods=$(kubectl get pods --all-namespaces --field-selector=status.phase=Pending -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}')
+
+              # Write to log file based on whether pending pods were found
+              if [ -n "$pending_pods" ]; then
+                echo "$(date): Pending pods found:" >> /tmp/logs/pending_pods.log
+                echo "$pending_pods" >> /tmp/logs/pending_pods.log
+                echo "Pending pods details logged to $LOG_FILE." >> /tmp/logs/pending_pods.log
+                echo "$pending_pods" > $LOG_FILE # Save the details to a separate log file
+              else
+                echo "No pending pods found at $(date)" >> /tmp/logs/pending_pods.log
+                echo "No pending pods found." > $LOG_FILE # Also log this in the separate log file
+              fi
+
+              echo "Job completed at $(date)" >> /tmp/logs/pending_pods.log
+              echo "---" >> /tmp/logs/pending_pods.log
+            volumeMounts:
+            - name: node-logs
+              mountPath: /tmp/logs
+          restartPolicy: OnFailure
+          volumes:
+          - name: node-logs
+            hostPath:
+              path: /tmp/logs
+              type: DirectoryOrCreate
